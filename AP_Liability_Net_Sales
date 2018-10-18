@@ -1,0 +1,97 @@
+select
+  o.event_id,
+  -- pt.payment_types,
+  o.current_status,
+  o.org_uid,
+  o.currency,
+  sum(o.net_sales) AS net_sales
+from (
+  SELECT
+    base.event_id,
+    -- base.event_id*1003 eid,
+    base.current_status,
+    base.uid org_uid,
+    base.currency,
+    sum(IF(base.payment_type = 'eventbrite',(base.gross-base.mg_fee),-base.mg_fee)) net_sales
+    -- base.start_date,
+    -- base.end_date
+  FROM
+    (
+    SELECT order_data.*
+    FROM
+      (select
+        ROW_NUMBER() OVER(PARTITION BY order_id ORDER BY o.changed DESC, o.log_position desc) rnum,
+        o.order_id,
+        o.event_id,
+        o.gross,
+        o.mg_fee,
+        o.payment_type,
+        o.currency,
+        e.uid,
+        o.changed,
+        o.status AS order_status,
+        e.start_date,
+        e.end_date,
+        e.current_status
+      from hive.eb_history.History_Orders o
+      join hive.eb.Events e on e.id = o.event_id
+      where
+        o.changed >= TIMESTAMP '2013-05-13 13:30:06'
+        and o.changed < TIMESTAMP '2018-01-01'
+        and o.payment_type in ('eventbrite','offline')
+        and o.status IN (100,200,220,400,350,300,250)
+      ) order_data
+    WHERE rnum = 1 and order_status = 100
+    ) base
+  group by 1,2,3,4
+union (
+  SELECT
+    o.event AS event_id,
+    e.current_status,
+    e.uid as org_uid,
+    o.currency,
+    sum(IF(o.payment_type = 'eventbrite',(o.gross-o.mg_fee),-o.mg_fee)) net_sales
+  FROM hive.eb.Orders o
+  join hive.eb.Events e on e.id = o.event
+  WHERE
+    status = 100 AND
+    o.changed < TIMESTAMP '2018-01-01' AND -- order was changed before 1/1/18 --- this one is the only date i'm 100% not sure if that is the best date to use.
+    o.payment_type in ('eventbrite','offline') AND
+    o.id not in (
+            SELECT order_data.order_id
+            FROM
+              (select
+                ROW_NUMBER() OVER(PARTITION BY order_id ORDER BY o.changed DESC) rnum,
+                o.order_id,
+                o.changed,
+                o.status AS order_status
+              from hive.eb_history.History_Orders o
+              where
+                o.changed >= TIMESTAMP '2013-05-13 13:30:06'
+                and o.changed < TIMESTAMP '2018-01-01'
+                and o.payment_type in ('eventbrite','offline')
+                and o.status IN (100,200,220,400,350,300,250)
+              ) order_data
+            WHERE rnum = 1 and order_status = 100
+            )
+  group by 1,2,3,4
+  )
+) o
+---- edge cases where more than 1 payment type (ie. eventbrite + paypal)
+-- left join (
+--   select event, payment_types
+--   from (
+--     select event,
+--       count(distinct payment_type) num_payment_types,
+--       array_join(array_Sort(array_agg(distinct payment_type)), ',') payment_types
+--     from hive.eb.orders
+--     where payment_type not in ('free', 'manual') and
+--       status = 100 and
+--       mg_fee > 0
+--     group by event
+--     )
+--   where num_payment_types > 1 and
+--     payment_types in ('eventbrite,google','eventbrite,paypal','eventbrite,google,offline','eventbrite,offline,paypal')
+--   ) pt on pt.event = o.event_id
+where net_sales <> 0
+group by 1,2,3,4,5
