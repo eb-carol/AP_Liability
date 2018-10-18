@@ -1,0 +1,16 @@
+select 
+  event, 
+  payment_types
+from (
+  select 
+    event,
+    count(distinct payment_type) num_payment_types,
+    array_join(array_Sort(array_agg(distinct payment_type)), ',') payment_types
+  from hive.eb.orders
+  where payment_type not in ('free', 'manual') 
+    and status = 100 
+    and mg_fee > 0
+  group by event
+  )
+where num_payment_types > 1 
+  and payment_types in ('eventbrite,google','eventbrite,paypal','eventbrite,google,offline','eventbrite,offline,paypal')
